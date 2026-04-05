@@ -47,9 +47,9 @@ export const conversationParticipant = pgTable(
   (table) => [
     uniqueIndex("conversation_participant_conversation_id_user_id_idx").on(
       table.conversationId,
-      table.userId
+      table.userId,
     ),
-  ]
+  ],
 );
 
 export const message = pgTable(
@@ -74,9 +74,9 @@ export const message = pgTable(
   (table) => [
     index("message_conversation_id_created_at_idx").on(
       table.conversationId,
-      table.createdAt
+      table.createdAt,
     ),
-  ]
+  ],
 );
 
 export const conversationRelations = relations(conversation, ({ many }) => ({
@@ -95,7 +95,7 @@ export const conversationParticipantRelations = relations(
       fields: [conversationParticipant.userId],
       references: [user.id],
     }),
-  })
+  }),
 );
 
 export const messageRelations = relations(message, ({ one, many }) => ({

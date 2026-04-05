@@ -14,7 +14,7 @@ export default function SplashRoute() {
 
       if (session?.user) {
         // User is already logged in, go to main app
-        router.replace("/(drawer)");
+        router.replace("/");
       } else {
         // User not logged in, go to landing/login
         router.replace("/landing");

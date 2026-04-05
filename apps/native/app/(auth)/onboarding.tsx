@@ -58,7 +58,7 @@ export default function OnboardingScreen() {
       {/* Fixed Footer Button */}
       <View style={styles.footer}>
         <Button 
-          onPress={() => router.replace("/(drawer)")} 
+          onPress={() => router.replace("/")} 
           className="bg-black h-14 rounded-full w-full"
         >
           <Button.Label className="text-white font-bold text-lg">I agree</Button.Label>

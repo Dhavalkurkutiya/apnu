@@ -1,5 +1,4 @@
 import { auth } from "@apnu/auth";
-import { env } from "@apnu/env/server";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { createFactory } from "hono/factory";
@@ -7,8 +6,8 @@ import { user } from "@apnu/db/schema/auth";
 
 import usersRoute from "./routes/users";
 import conversationsRoute from "./routes/conversations";
-
 import wsRoute, { websocket } from "./routes/ws";
+import { startMessagePersistenceWorker } from "./lib/message-worker";
 
 type Env = {
   Variables: {
@@ -20,38 +19,40 @@ type Env = {
 const factory = createFactory<Env>();
 const app = factory.createApp();
 
+// 1. Logger first
 app.use(logger());
+
+// 2. CORS Config - Ensure Authorization is allowed
 app.use(
   "/*",
   cors({
-    origin: env.CORS_ORIGIN,
-    allowMethods: ["GET", "POST", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
+    origin: (origin) => origin || "*", // More permissive for native development
+    allowMethods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+    allowHeaders: ["Content-Type", "Authorization", "x-better-auth-token"],
     credentials: true,
+    exposeHeaders: ["Set-Cookie"],
   }),
 );
 
 // Global Error Handler
 app.onError((err, c) => {
-  console.error(`[Error] ${c.req.method} ${c.req.url}:`, err);
+  console.error(`[Fatal Error] ${c.req.method} ${c.req.url}:`, err);
   return c.json(
     {
       error: "Internal Server Error",
       message: process.env.NODE_ENV === "production" ? undefined : err.message,
     },
-    500
+    500,
   );
 });
 
-// Not Found Handler
-app.notFound((c) => {
-  return c.json({ error: "Not Found", path: c.req.path }, 404);
+// 3. Auth Handler - Must be before protected routes
+app.on(["POST", "GET"], "/api/auth/*", (c) => {
+    console.info(`[Auth] Path: ${c.req.path} | Method: ${c.req.method}`);
+    return auth.handler(c.req.raw);
 });
 
-// Auth Route
-app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
-
-// Feature Routes - Chained for RPC support
+// 4. Feature Routes - Chained for RPC support
 const routes = app
   .route("/api/users", usersRoute)
   .route("/api/conversations", conversationsRoute)
@@ -61,11 +62,13 @@ app.get("/", (c) => {
   return c.text("Apnu API is running");
 });
 
-// Special export for Bun to handle WebSockets
+// Start Background Persistence Worker
+startMessagePersistenceWorker();
+
+// Bun entrypoint
 export default {
   fetch: app.fetch,
   websocket,
 };
+
 export type AppType = typeof routes;
-
-

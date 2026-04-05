@@ -1,7 +1,11 @@
 /** Conversations route logic */
 import { Hono } from "hono";
 import { db } from "@apnu/db";
-import { conversation, conversationParticipant, message } from "@apnu/db/schema/chat";
+import {
+  conversation,
+  conversationParticipant,
+  message,
+} from "@apnu/db/schema/chat";
 import { user } from "@apnu/db/schema/auth";
 import { eq, and, desc, lt, sql } from "drizzle-orm";
 import { authMiddleware } from "../middleware/auth";
@@ -19,15 +23,19 @@ const createConversationSchema = z.object({
 
 const getMessagesSchema = z.object({
   cursor: z.string().optional(),
-  limit: z.string().optional().transform(v => parseInt(v || "30")).pipe(z.number().min(1).max(100)),
+  limit: z
+    .string()
+    .optional()
+    .transform((v) => parseInt(v || "30"))
+    .pipe(z.number().min(1).max(100)),
 });
 
 // GET /api/conversations
-// Get all conversations for the current user
 conversationsRoute.get("/", authMiddleware, async (c) => {
   const currentUser = c.get("user");
-
   if (!currentUser) return c.json({ error: "Unauthorized" }, 401);
+
+  console.info(`[Conversations] Fetching all for user="${currentUser.id}"`);
 
   try {
     const results = await db.query.conversationParticipant.findMany({
@@ -57,7 +65,9 @@ conversationsRoute.get("/", authMiddleware, async (c) => {
     const sortedConversations = results
       .map((r) => {
         const conv = r.conversation;
-        const otherParticipant = conv.participants.find(p => p.userId !== currentUser.id);
+        const otherParticipant = conv.participants.find(
+          (p) => p.userId !== currentUser.id,
+        );
         const lastMessage = conv.messages[0];
 
         return {
@@ -71,17 +81,20 @@ conversationsRoute.get("/", authMiddleware, async (c) => {
           otherParticipant: otherParticipant?.user,
         };
       })
-      .sort((a, b) => (b.lastMessageAt?.getTime() || 0) - (a.lastMessageAt?.getTime() || 0));
+      .sort(
+        (a, b) =>
+          (b.lastMessageAt?.getTime() || 0) - (a.lastMessageAt?.getTime() || 0),
+      );
 
+    console.info(`[Conversations] Success: ${sortedConversations.length} found`);
     return c.json(sortedConversations);
   } catch (error) {
-    console.error("[Get Conversations Error]:", error);
+    console.error("[Conversations] Fetch Error:", error);
     return c.json({ error: "Failed to fetch conversations" }, 500);
   }
 });
 
 // POST /api/conversations
-// Create or get a direct conversation with another user
 conversationsRoute.post("/", authMiddleware, async (c) => {
   const currentUser = c.get("user");
   if (!currentUser) return c.json({ error: "Unauthorized" }, 401);
@@ -89,14 +102,19 @@ conversationsRoute.post("/", authMiddleware, async (c) => {
   const body = await c.req.json();
   const validation = createConversationSchema.safeParse(body);
   if (!validation.success) {
-    return c.json({ error: "Invalid input", details: validation.error.format() }, 400);
+    console.error(`[Conversations] Create validation failed by user="${currentUser.id}"`);
+    return c.json(
+      { error: "Invalid input", details: validation.error.format() },
+      400,
+    );
   }
 
   const { participantUserId } = validation.data;
+  console.info(`[Conversations] Create/Get initiated: actor="${currentUser.id}" target="${participantUserId}"`);
 
   try {
     return await db.transaction(async (tx) => {
-      // 1. Check for existing direct conversation (Optimized single query)
+      // 1. Check for existing direct conversation
       const existingConversation = await tx
         .select({
           id: conversation.id,
@@ -107,7 +125,7 @@ conversationsRoute.post("/", authMiddleware, async (c) => {
         .from(conversation)
         .innerJoin(
           conversationParticipant,
-          eq(conversation.id, conversationParticipant.conversationId)
+          eq(conversation.id, conversationParticipant.conversationId),
         )
         .where(
           and(
@@ -117,25 +135,36 @@ conversationsRoute.post("/", authMiddleware, async (c) => {
               SELECT 1 FROM ${conversationParticipant} p2 
               WHERE p2."conversationId" = ${conversation}.id 
               AND p2."userId" = ${participantUserId}
-            )`
-          )
+            )`,
+          ),
         )
         .limit(1);
 
-      if (existingConversation.length > 0) {
-        return c.json(existingConversation[0]);
+      const match = existingConversation[0];
+      if (match) {
+        console.info(`[Conversations] Existing conversation found: ${match.id}`);
+        return c.json(match);
       }
 
       // 2. Create new conversation if not found
       const newConversationId = crypto.randomUUID();
+      console.info(`[Conversations] Creating new direct chat: ${newConversationId}`);
       await tx.insert(conversation).values({
         id: newConversationId,
         isGroup: false,
       });
 
       await tx.insert(conversationParticipant).values([
-        { id: crypto.randomUUID(), conversationId: newConversationId, userId: currentUser.id },
-        { id: crypto.randomUUID(), conversationId: newConversationId, userId: participantUserId },
+        {
+          id: crypto.randomUUID(),
+          conversationId: newConversationId,
+          userId: currentUser.id,
+        },
+        {
+          id: crypto.randomUUID(),
+          conversationId: newConversationId,
+          userId: participantUserId,
+        },
       ]);
 
       const result = await tx.query.conversation.findFirst({
@@ -143,16 +172,17 @@ conversationsRoute.post("/", authMiddleware, async (c) => {
         with: {
           participants: {
             with: {
-              user: { columns: { id: true, name: true, image: true } }
+              user: { columns: { id: true, name: true, image: true } },
             },
           },
         },
       });
 
+      console.info(`[Conversations] Created successfully: ${newConversationId}`);
       return c.json(result, 201);
     });
   } catch (error) {
-    console.error("[Create Conversation Error]:", error);
+    console.error("[Conversations] Create Error:", error);
     return c.json({ error: "Failed to create conversation" }, 500);
   }
 });
@@ -164,25 +194,36 @@ conversationsRoute.get("/:id/messages", authMiddleware, async (c) => {
   const validation = getMessagesSchema.safeParse(query);
 
   if (!validation.success) {
-    return c.json({ error: "Invalid query parameters", details: validation.error.format() }, 400);
+    return c.json(
+      { error: "Invalid query parameters", details: validation.error.format() },
+      400,
+    );
   }
 
   const { cursor, limit } = validation.data;
   const currentUser = c.get("user");
-
   if (!currentUser) return c.json({ error: "Unauthorized" }, 401);
 
+  console.info(`[Messages] Fetching: conv="${conversationId}" user="${currentUser.id}" limit=${limit}`);
+
   try {
-    // SECURITY: Ensure current user is a participant in this conversation
+    // SECURITY: Ensure current user is a participant
     const participation = await db.query.conversationParticipant.findFirst({
       where: and(
         eq(conversationParticipant.conversationId, conversationId),
-        eq(conversationParticipant.userId, currentUser.id)
+        eq(conversationParticipant.userId, currentUser.id),
       ),
     });
 
     if (!participation) {
-      return c.json({ error: "Forbidden", message: "You are not a participant in this conversation" }, 403);
+      console.warn(`[Messages] Forbidden access attempt: actor="${currentUser.id}" conv="${conversationId}"`);
+      return c.json(
+        {
+          error: "Forbidden",
+          message: "You are not a participant in this conversation",
+        },
+        403,
+      );
     }
 
     const cursorDate = cursor ? new Date(cursor) : null;
@@ -191,7 +232,9 @@ conversationsRoute.get("/:id/messages", authMiddleware, async (c) => {
     const messages = await db.query.message.findMany({
       where: and(
         eq(message.conversationId, conversationId),
-        cursorDate && !isInvalidDate ? lt(message.createdAt, cursorDate) : undefined
+        cursorDate && !isInvalidDate
+          ? lt(message.createdAt, cursorDate)
+          : undefined,
       ),
       with: {
         sender: { columns: { id: true, name: true, image: true } },
@@ -200,28 +243,31 @@ conversationsRoute.get("/:id/messages", authMiddleware, async (c) => {
       limit,
     });
 
+    console.info(`[Messages] Success: ${messages.length} returned for conv="${conversationId}"`);
+
     const oldestInBatch = messages[messages.length - 1];
-    const nextCursor = (messages.length === limit && oldestInBatch) 
-      ? oldestInBatch.createdAt.toISOString() 
-      : null;
+    const nextCursor =
+      messages.length === limit && oldestInBatch
+        ? oldestInBatch.createdAt.toISOString()
+        : null;
 
     return c.json({
       items: [...messages].reverse(),
       nextCursor,
     });
   } catch (error) {
-    console.error("[Get Messages Error]:", error);
+    console.error("[Messages] Fetch Error:", error);
     return c.json({ error: "Failed to fetch messages" }, 500);
   }
 });
 
 // POST /api/conversations/:id/read
-// Mark a conversation as read (reset unreadCount)
 conversationsRoute.post("/:id/read", authMiddleware, async (c) => {
   const conversationId = c.req.param("id");
   const currentUser = c.get("user");
-
   if (!currentUser) return c.json({ error: "Unauthorized" }, 401);
+
+  console.info(`[Conversations] Marking read: conv="${conversationId}" user="${currentUser.id}"`);
 
   try {
     const result = await db
@@ -230,18 +276,25 @@ conversationsRoute.post("/:id/read", authMiddleware, async (c) => {
       .where(
         and(
           eq(conversationParticipant.conversationId, conversationId),
-          eq(conversationParticipant.userId, currentUser.id)
-        )
+          eq(conversationParticipant.userId, currentUser.id),
+        ),
       )
       .returning();
 
     if (result.length === 0) {
-      return c.json({ error: "Not Found", message: "Conversation not found or not a participant" }, 404);
+      console.warn(`[Conversations] Read mark failed: Conversation not found for actor="${currentUser.id}"`);
+      return c.json(
+        {
+          error: "Not Found",
+          message: "Conversation not found or not a participant",
+        },
+        404,
+      );
     }
 
     return c.json({ success: true });
   } catch (error) {
-    console.error("[Mark Read Error]:", error);
+    console.error("[Conversations] Mark Read Error:", error);
     return c.json({ error: "Failed to mark as read" }, 500);
   }
 });

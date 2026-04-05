@@ -89,7 +89,7 @@ function SignIn() {
               variant: "success",
               label: "Signed in successfully",
             });
-            router.replace("/(drawer)");
+            router.replace("/");
           },
         },
       );
