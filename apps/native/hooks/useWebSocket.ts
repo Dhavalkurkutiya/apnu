@@ -20,31 +20,28 @@ export interface UseWebSocketReturn {
   messages: Message[];
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
   sendMessage: (content: string) => Promise<void>;
+  sendTypingStatus: (isTyping: boolean) => void;
+  isOtherTyping: boolean;
   isConnected: boolean;
   isConnecting: boolean;
 }
 
 /**
  * useWebSocket hook for real-time chat in Apnu
- *
- * Features:
- * - Direct WS connection to Hono server
- * - Auth session token in query params
- * - Optimistic UI updates with tempId
- * - Automatic reconnection with exponential backoff (max 5 retries)
  */
 export const useWebSocket = (conversationId: string): UseWebSocketReturn => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isOtherTyping, setIsOtherTyping] = useState(false);
 
   const ws = useRef<WebSocket | null>(null);
   const reconnectCount = useRef(0);
   const maxRetries = 5;
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const connect = useCallback(async () => {
-    // Prevent multiple connections or exceeding retries
     if (ws.current || reconnectCount.current >= maxRetries) return;
 
     setIsConnecting(true);
@@ -59,17 +56,13 @@ export const useWebSocket = (conversationId: string): UseWebSocketReturn => {
         return;
       }
 
-      // 1. Construct WS URL from EXPO_PUBLIC_SERVER_URL
       const baseUrl = env.EXPO_PUBLIC_SERVER_URL.replace(/^http/, "ws");
       const wsUrl = `${baseUrl}/api/ws?token=${token}&conversationId=${conversationId}`;
 
       const socket = new WebSocket(wsUrl);
 
       socket.onopen = () => {
-        console.log(
-          "[useWebSocket] Connected to conversation:",
-          conversationId,
-        );
+        console.log("[useWebSocket] Connected to conversation:", conversationId);
         setIsConnected(true);
         setIsConnecting(false);
         reconnectCount.current = 0;
@@ -83,7 +76,6 @@ export const useWebSocket = (conversationId: string): UseWebSocketReturn => {
           const tempId = data.tempId;
 
           setMessages((prev) => {
-            // Handle Optimistic Update replacement
             if (tempId) {
               const exists = prev.some((m) => m.tempId === tempId);
               if (exists) {
@@ -92,34 +84,36 @@ export const useWebSocket = (conversationId: string): UseWebSocketReturn => {
                 );
               }
             }
-
-            // Prevent duplicates if already received via other broadcast
             if (prev.some((m) => m.id === newMessage.id)) return prev;
-
-            return [...prev, newMessage];
+            return [newMessage, ...prev];
+          });
+        } else if (data.type === "typing") {
+          // Verify it's not from current user (though server should handle this)
+          authClient.getSession().then((session) => {
+            if (data.userId !== session.data?.user.id) {
+              setIsOtherTyping(data.isTyping);
+              
+              // Auto-clear typing after 5 seconds if no stop signal
+              if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+              if (data.isTyping) {
+                typingTimeoutRef.current = setTimeout(() => {
+                  setIsOtherTyping(false);
+                }, 5000);
+              }
+            }
           });
         }
-
-        // Handle Typing status could be added here
       };
 
       socket.onclose = (e) => {
-        console.log("[useWebSocket] Closed:", e.code, e.reason);
         setIsConnected(false);
         setIsConnecting(false);
         ws.current = null;
 
-        // 3. Auto-reconnect with exponential backoff
         if (reconnectCount.current < maxRetries) {
           const delay = Math.pow(2, reconnectCount.current) * 1000;
           reconnectCount.current += 1;
-          console.log(
-            `[useWebSocket] Reconnecting in ${delay}ms... (Attempt ${reconnectCount.current})`,
-          );
-
-          timeoutRef.current = setTimeout(() => {
-            connect();
-          }, delay);
+          timeoutRef.current = setTimeout(() => connect(), delay);
         }
       };
 
@@ -136,10 +130,9 @@ export const useWebSocket = (conversationId: string): UseWebSocketReturn => {
 
   useEffect(() => {
     connect();
-
-    // 6. Cleanup on unmount
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       if (ws.current) {
         ws.current.close();
         ws.current = null;
@@ -147,20 +140,14 @@ export const useWebSocket = (conversationId: string): UseWebSocketReturn => {
     };
   }, [connect]);
 
-  // 4. Send Message with Optimistic Update
   const sendMessage = useCallback(async (content: string) => {
-    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
-      console.warn("[useWebSocket] Cannot send message: Not connected");
-      return;
-    }
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
 
     const session = await authClient.getSession();
     const userId = session.data?.user.id;
     if (!userId) return;
 
-    // Generate tempId for tracking
     const tempId = Math.random().toString(36).substring(7);
-
     const optimisticMsg: Message = {
       id: tempId,
       tempId,
@@ -170,10 +157,8 @@ export const useWebSocket = (conversationId: string): UseWebSocketReturn => {
       createdAt: new Date().toISOString(),
     };
 
-    // Update state immediately
-    setMessages((prev) => [...prev, optimisticMsg]);
+    setMessages((prev) => [optimisticMsg, ...prev]);
 
-    // Send payload
     ws.current.send(
       JSON.stringify({
         type: "message",
@@ -183,10 +168,22 @@ export const useWebSocket = (conversationId: string): UseWebSocketReturn => {
     );
   }, []);
 
+  const sendTypingStatus = useCallback((isTyping: boolean) => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    ws.current.send(
+      JSON.stringify({
+        type: "typing",
+        isTyping,
+      }),
+    );
+  }, []);
+
   return {
     messages,
     setMessages,
     sendMessage,
+    sendTypingStatus,
+    isOtherTyping,
     isConnected,
     isConnecting,
   };

@@ -133,8 +133,8 @@ conversationsRoute.post("/", authMiddleware, async (c) => {
             eq(conversationParticipant.userId, currentUser.id),
             sql`EXISTS (
               SELECT 1 FROM ${conversationParticipant} p2 
-              WHERE p2."conversationId" = ${conversation}.id 
-              AND p2."userId" = ${participantUserId}
+              WHERE p2.conversation_id = ${conversation}.id 
+              AND p2.user_id = ${participantUserId}
             )`,
           ),
         )

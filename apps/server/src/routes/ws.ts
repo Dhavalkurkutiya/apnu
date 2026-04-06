@@ -25,7 +25,7 @@ const IncomingMessageSchema = z.discriminatedUnion("type", [
 
 export type IncomingPayload = z.infer<typeof IncomingMessageSchema>;
 
-interface WSContext {
+interface UserSession {
   userId: string;
   userName: string | null;
   userImage: string | null;
@@ -33,11 +33,16 @@ interface WSContext {
 }
 
 // --- Redis Setup for Scaling ---
-const redisPub = new Redis(env.REDIS_URL);
-const redisSub = new Redis(env.REDIS_URL);
+// Use fallbacks for local dev if Redis is unavailable
+const redisPub = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 1 });
+const redisSub = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 1 });
 
-// Track local connections
+redisPub.on("error", (err) => console.error("[Redis Pub] Connection failed. Real-time across instances disabled. Error:", err.message));
+redisSub.on("error", (err) => console.error("[Redis Sub] Connection failed. Real-time across instances disabled. Error:", err.message));
+
+// Track local connections and their session data
 const localRooms = new Map<string, Set<any>>();
+const sessionData = new WeakMap<any, UserSession>();
 
 // Redis Subscription Handler
 redisSub.on("message", (channel: string, payload: string) => {
@@ -46,14 +51,15 @@ redisSub.on("message", (channel: string, payload: string) => {
     const room = localRooms.get(conversationId);
     if (room) {
       room.forEach((ws) => {
-        if (ws.readyState === 1) ws.send(payload);
+        try {
+          ws.send(payload);
+        } catch (err) {
+          console.error("[WS] Broadcast error:", err);
+        }
       });
     }
   }
 });
-
-redisSub.on("error", (err) => console.error("[Redis Sub] Error:", err));
-redisPub.on("error", (err) => console.error("[Redis Pub] Error:", err));
 
 export { websocket };
 
@@ -105,21 +111,25 @@ wsRoute.get(
       async onOpen(_evt, ws) {
         if (!localRooms.has(conversationId)) {
           localRooms.set(conversationId, new Set());
-          await redisSub.subscribe(`chat:room:${conversationId}`);
+          redisSub.subscribe(`chat:room:${conversationId}`).catch(() => {
+            console.warn(`[Redis] Failed to subscribe to channel for room: ${conversationId}`);
+          });
           console.info(
-            `[WS] SUBSCRIBED to Redis channel: chat:room:${conversationId}`,
+            `[WS] SUBSCRIBED to room: ${conversationId}`,
           );
         }
         localRooms.get(conversationId)?.add(ws);
 
-        const context = ws.raw as unknown as WSContext;
-        context.userId = session.user.id;
-        context.userName = session.user.name;
-        context.userImage = session.user.image || null;
-        context.conversationId = conversationId;
+        // Store session data correctly
+        sessionData.set(ws, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userImage: session.user.image || null,
+          conversationId: conversationId,
+        });
 
         console.info(
-          `[WS] OPENED: user="${context.userId}" connections_in_room=${localRooms.get(conversationId)?.size}`,
+          `[WS] OPENED: user="${session.user.id}" connections_in_room=${localRooms.get(conversationId)?.size}`,
         );
       },
       async onMessage(evt, ws) {
@@ -130,15 +140,16 @@ wsRoute.get(
           );
 
           if (!validation.success) {
-            console.error(
-              `[WS] Validation failed for user="${(ws.raw as any).userId}":`,
-              validation.error.format(),
-            );
             return;
           }
 
           const data = validation.data;
-          const context = ws.raw as unknown as WSContext;
+          const context = sessionData.get(ws);
+          
+          if (!context) {
+            console.error("[WS] No context found for connection");
+            return;
+          }
 
           if (data.type === "message") {
             const msgId = crypto.randomUUID();
@@ -167,13 +178,16 @@ wsRoute.get(
             });
 
             console.info(
-              `[WS] BROADCAST: user="${context.userId}" conv="${context.conversationId}" msgId="${msgId}"`,
+              `[WS] BROADCAST: user="${context.userId}" conv="${context.conversationId}"`,
             );
+            
+            // Broadcast via Redis
             await redisPub.publish(
               `chat:room:${context.conversationId}`,
               payload,
             );
 
+            // Persist to DB via worker
             queueMessageForPersistence(savedMessage).catch((err) => {
               console.error("[WS] Persistence queue error:", err);
             });
@@ -193,20 +207,18 @@ wsRoute.get(
         }
       },
       async onClose(_evt, ws) {
-        const context = ws.raw as unknown as WSContext;
-        const room = localRooms.get(context.conversationId);
+        const context = sessionData.get(ws);
+        if (!context) return;
 
+        const room = localRooms.get(context.conversationId);
         if (room) {
           room.delete(ws);
           console.info(
-            `[WS] CLOSED: user="${context.userId}" remaining_in_room=${room.size}`,
+            `[WS] CLOSED: user="${context.userId}" remaining=${room.size}`,
           );
           if (room.size === 0) {
             localRooms.delete(context.conversationId);
-            await redisSub.unsubscribe(`chat:room:${context.conversationId}`);
-            console.info(
-              `[WS] UNSUBSCRIBED from empty room channel: ${context.conversationId}`,
-            );
+            redisSub.unsubscribe(`chat:room:${context.conversationId}`).catch(() => {});
           }
         }
       },

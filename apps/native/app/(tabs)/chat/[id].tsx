@@ -39,8 +39,15 @@ export default function ChatDetailScreen() {
   const currentUserId = session?.user?.id;
 
   // 2. Real-time WebSocket Hook
-  const { messages, setMessages, sendMessage, isConnected, isConnecting } =
-    useWebSocket(conversationId);
+  const {
+    messages,
+    setMessages,
+    sendMessage,
+    sendTypingStatus,
+    isOtherTyping,
+    isConnected,
+    isConnecting,
+  } = useWebSocket(conversationId);
 
   // 3. Fetch Message History (on mount)
   const { isLoading: isHistoryLoading } = useQuery({
@@ -76,7 +83,17 @@ export default function ChatDetailScreen() {
     if (!inputText.trim()) return;
     const text = inputText.trim();
     setInputText("");
+    sendTypingStatus(false); // Stop typing on send
     await sendMessage(text);
+  };
+
+  const handleInputChange = (text: string) => {
+    setInputText(text);
+    if (text.length > 0) {
+      sendTypingStatus(true);
+    } else {
+      sendTypingStatus(false);
+    }
   };
 
   // 5. Render Message Bubble
@@ -187,9 +204,18 @@ export default function ChatDetailScreen() {
             inverted
             contentContainerStyle={styles.messageList}
             ListFooterComponent={
-              isHistoryLoading ? (
-                <ActivityIndicator style={{ margin: 20 }} />
-              ) : null
+              <View>
+                {isOtherTyping && (
+                  <View style={styles.typingIndicator}>
+                    <Text style={styles.typingText}>
+                      {initialName || "Someone"} is typing...
+                    </Text>
+                  </View>
+                )}
+                {isHistoryLoading ? (
+                  <ActivityIndicator style={{ margin: 20 }} />
+                ) : null}
+              </View>
             }
           />
 
@@ -205,7 +231,8 @@ export default function ChatDetailScreen() {
                   multiline
                   maxLength={1000}
                   value={inputText}
-                  onChangeText={setInputText}
+                  onChangeText={handleInputChange}
+                  onBlur={() => sendTypingStatus(false)}
                 />
                 <TouchableOpacity
                   style={[
@@ -401,4 +428,14 @@ const styles = StyleSheet.create({
   detailValue: { fontSize: 16, color: "#222", fontWeight: "500", marginTop: 2 },
   reportBtn: { padding: 16, alignItems: "center", marginTop: 8 },
   reportText: { fontSize: 16, fontWeight: "600", color: "#717171" },
+  typingIndicator: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  typingText: {
+    fontSize: 13,
+    fontStyle: "italic",
+    color: "#717171",
+  },
 });
