@@ -11,7 +11,8 @@ import {
 import { useRouter, Stack } from "expo-router";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import { client } from "../../../lib/api";
+import { authClient } from "../../../lib/auth-client";
+import { env } from "@apnu/env/native";
 
 export default function NewChatScreen() {
   const router = useRouter();
@@ -28,34 +29,52 @@ export default function NewChatScreen() {
   const { data: users = [], isLoading } = useQuery<any[]>({
     queryKey: ["users", "list", debouncedQuery],
     queryFn: async () => {
-      let res;
-      if (debouncedQuery.trim()) {
-        // If searching
-        res = await client.api.users.search.$get({
-          query: { q: debouncedQuery },
-        });
-      } else {
-        // If empty, show suggested (all)
-        res = await client.api.users.$get();
-      }
+      try {
+        const cookie = authClient.getCookie();
+        const url = debouncedQuery.trim()
+          ? `${env.EXPO_PUBLIC_SERVER_URL}/api/users/search?q=${encodeURIComponent(debouncedQuery)}`
+          : `${env.EXPO_PUBLIC_SERVER_URL}/api/users`;
 
-      if (!res.ok) return [];
-      const data = await res.json();
-      return Array.isArray(data) ? data : [];
+        const res = await fetch(url, {
+          headers: {
+            Cookie: cookie || "",
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+        });
+
+        if (!res.ok) {
+          console.warn("[NewChat] Fetch failed:", res.status);
+          return [];
+        }
+        const data = await res.json();
+        return Array.isArray(data) ? data : [];
+      } catch (error) {
+        console.error("[NewChat] Query error:", error);
+        return [];
+      }
     },
   });
 
   // 3. Create Conversation Mutation
   const createConv = useMutation({
     mutationFn: async (userId: string) => {
-      const res = await client.api.conversations.$post({
-        json: { participantUserId: userId },
+      const cookie = authClient.getCookie();
+      const res = await fetch(`${env.EXPO_PUBLIC_SERVER_URL}/api/conversations`, {
+        method: "POST",
+        headers: {
+          Cookie: cookie || "",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ participantUserId: userId }),
+        credentials: "include"
       });
+
       if (!res.ok) throw new Error("Failed to start chat");
       return res.json();
     },
     onSuccess: (data) => {
-      router.replace(`/chat/${data.id}`);
+      router.replace(`/chat/${(data as any).id}`);
     },
   });
 

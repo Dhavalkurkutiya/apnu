@@ -17,8 +17,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { KeyboardGestureArea } from "react-native-keyboard-controller";
 import { Container } from "../../../components/container";
 import { authClient } from "../../../lib/auth-client";
-import { client } from "../../../lib/api";
 import { useWebSocket, Message } from "../../../hooks/useWebSocket";
+import { env } from "@apnu/env/native";
 import { format } from "date-fns";
 
 /**
@@ -46,17 +46,29 @@ export default function ChatDetailScreen() {
   const { isLoading: isHistoryLoading } = useQuery({
     queryKey: ["messages", conversationId],
     queryFn: async () => {
-      const res = await client.api.conversations[":id"].messages.$get({
-        param: { id: conversationId },
-        query: { limit: "50" },
-      });
-      if (!res.ok) throw new Error("Failed to fetch history");
-      const data = await res.json();
-      const history = (data as any).items as Message[];
-      setMessages(history.reverse());
-      return data;
+      try {
+        const cookie = authClient.getCookie();
+        const url = `${env.EXPO_PUBLIC_SERVER_URL}/api/conversations/${conversationId}/messages?limit=50`;
+
+        const res = await fetch(url, {
+          headers: {
+            Cookie: cookie || "",
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+        });
+
+        if (!res.ok) throw new Error("Failed to fetch history");
+        const data = await res.json();
+        const history = (data as any).items as Message[];
+        setMessages(history.reverse());
+        return data;
+      } catch (error) {
+        console.error("[ChatDetail] History fetch error:", error);
+        throw error;
+      }
     },
-    enabled: !!currentUserId,
+    enabled: !!currentUserId && !!conversationId,
   });
 
   // 4. Send Message Handler
