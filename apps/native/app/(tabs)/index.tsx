@@ -7,13 +7,16 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  RefreshControl,
 } from "react-native";
 import { useThemeColor, Button } from "heroui-native";
 import { authClient } from "../../lib/auth-client";
 import { Container } from "../../components/container";
 import { useRouter } from "expo-router";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { client } from "../../lib/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "../../lib/api";
+// Use a local alias with type assertion to unblock IDE issues with Hono RPC inference
+const client = api as any;
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useAppTheme } from "../../contexts/app-theme-context";
@@ -29,7 +32,11 @@ export default function Dashboard() {
   const surfaceColor = useThemeColor("surface");
 
   // 1. Fetch recent conversations
-  const { data: conversations, isLoading: isChatLoading } = useQuery({
+  const {
+    data: conversations,
+    isLoading: isChatLoading,
+    refetch: refetchConversations,
+  } = useQuery({
     queryKey: ["conversations", "recent"],
     queryFn: async () => {
       const res = await client.api.conversations.$get();
@@ -38,9 +45,13 @@ export default function Dashboard() {
       return (data as any[]).slice(0, 3);
     },
   });
-
+  
   // 2. Fetch All Users for Discovery
-  const { data: discoverUsers, isLoading: isUsersLoading } = useQuery({
+  const {
+    data: discoverUsers,
+    isLoading: isUsersLoading,
+    refetch: refetchUsers,
+  } = useQuery({
     queryKey: ["users", "discover"],
     queryFn: async () => {
       const res = await client.api.users.$get();
@@ -49,6 +60,14 @@ export default function Dashboard() {
       return Array.isArray(data) ? data : [];
     },
   });
+
+  const [refreshing, setRefreshing] = React.useState(false);
+
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    await Promise.all([refetchConversations(), refetchUsers()]);
+    setRefreshing(false);
+  }, [refetchConversations, refetchUsers]);
 
   // 3. Create Conversation Mutation
   const createConv = useMutation({
@@ -67,7 +86,17 @@ export default function Dashboard() {
   return (
     <Container style={styles.safe} isScrollable={false} disableSafeArea={true}>
       <StatusBar style={"light"} />
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#ff385c"
+            colors={["#ff385c"]}
+          />
+        }
+      >
         {/* Header Section */}
         <View style={styles.hero}>
           <Text style={styles.greeting}>

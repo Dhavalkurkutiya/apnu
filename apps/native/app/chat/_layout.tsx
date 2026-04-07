@@ -13,7 +13,6 @@ export default function ChatStackLayout() {
         animation: "slide_from_right"
       }}
     >
-      <Stack.Screen name="index" />
       <Stack.Screen name="new" />
       <Stack.Screen 
         name="[id]" 

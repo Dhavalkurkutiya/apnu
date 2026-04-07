@@ -30,16 +30,30 @@ const getMessagesSchema = z.object({
     .pipe(z.number().min(1).max(100)),
 });
 
+const listConversationsSchema = z.object({
+  limit: z.string().optional().transform(v => parseInt(v || "20")).pipe(z.number().min(1).max(50)),
+  offset: z.string().optional().transform(v => parseInt(v || "0")).pipe(z.number().min(0)),
+});
+
 // GET /api/conversations
 conversationsRoute.get("/", authMiddleware, async (c) => {
+  const query = c.req.query();
+  const validation = listConversationsSchema.safeParse(query);
+  if (!validation.success) {
+    return c.json({ error: "Invalid parameters", details: validation.error.format() }, 400);
+  }
+
+  const { limit, offset } = validation.data;
   const currentUser = c.get("user");
   if (!currentUser) return c.json({ error: "Unauthorized" }, 401);
 
-  console.info(`[Conversations] Fetching all for user="${currentUser.id}"`);
+  console.info(`[Conversations] Fetching page user="${currentUser.id}" (offset=${offset}, limit=${limit})`);
 
   try {
     const results = await db.query.conversationParticipant.findMany({
       where: eq(conversationParticipant.userId, currentUser.id),
+      limit: limit,
+      offset: offset,
       with: {
         conversation: {
           with: {
@@ -62,32 +76,32 @@ conversationsRoute.get("/", authMiddleware, async (c) => {
       },
     });
 
-    const sortedConversations = results
-      .map((r) => {
-        const conv = r.conversation;
-        const otherParticipant = conv.participants.find(
-          (p) => p.userId !== currentUser.id,
-        );
-        const lastMessage = conv.messages[0];
-
-        return {
-          id: conv.id,
-          name: conv.isGroup ? conv.name : otherParticipant?.user.name,
-          image: conv.isGroup ? null : otherParticipant?.user.image,
-          isGroup: conv.isGroup,
-          lastMessageAt: conv.lastMessageAt,
-          lastMessagePreview: lastMessage ? lastMessage.content : null,
-          unreadCount: r.unreadCount,
-          otherParticipant: otherParticipant?.user,
-        };
-      })
-      .sort(
-        (a, b) =>
-          (b.lastMessageAt?.getTime() || 0) - (a.lastMessageAt?.getTime() || 0),
+    const conversationsList = results.map((r) => {
+      const conv = r.conversation;
+      const otherParticipant = conv.participants.find(
+        (p) => p.userId !== currentUser.id,
       );
+      const lastMessage = conv.messages[0];
 
-    console.info(`[Conversations] Success: ${sortedConversations.length} found`);
-    return c.json(sortedConversations);
+      return {
+        id: conv.id,
+        name: conv.isGroup ? conv.name : otherParticipant?.user.name,
+        image: conv.isGroup ? null : otherParticipant?.user.image,
+        isGroup: conv.isGroup,
+        lastMessageAt: conv.lastMessageAt,
+        lastMessagePreview: lastMessage ? lastMessage.content : null,
+        unreadCount: r.unreadCount,
+        otherParticipant: otherParticipant?.user,
+      };
+    });
+
+    // Sort to ensure the most recent is first within the page
+    conversationsList.sort((a, b) => 
+      (b.lastMessageAt?.getTime() || 0) - (a.lastMessageAt?.getTime() || 0)
+    );
+
+    console.info(`[Conversations] Success: ${conversationsList.length} returned`);
+    return c.json(conversationsList);
   } catch (error) {
     console.error("[Conversations] Fetch Error:", error);
     return c.json({ error: "Failed to fetch conversations" }, 500);
@@ -252,7 +266,7 @@ conversationsRoute.get("/:id/messages", authMiddleware, async (c) => {
         : null;
 
     return c.json({
-      items: [...messages].reverse(),
+      items: messages,
       nextCursor,
     });
   } catch (error) {

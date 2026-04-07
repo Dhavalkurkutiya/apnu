@@ -22,16 +22,21 @@ const app = factory.createApp();
 // 1. Logger first
 app.use(logger());
 
-// 2. CORS Config - Ensure Authorization is allowed
+// 2. FIXED CORS Config - Skip for WebSocket upgrades to avoid header conflicts
 app.use(
   "/*",
-  cors({
-    origin: (origin) => origin || "*", // More permissive for native development
-    allowMethods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
-    allowHeaders: ["Content-Type", "Authorization", "x-better-auth-token"],
-    credentials: true,
-    exposeHeaders: ["Set-Cookie"],
-  }),
+  async (c, next) => {
+    if (c.req.header("upgrade") === "websocket") {
+      return await next();
+    }
+    return cors({
+      origin: (origin) => origin || "*",
+      allowMethods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+      allowHeaders: ["Content-Type", "Authorization", "Cookie", "x-better-auth-token"],
+      credentials: true,
+      exposeHeaders: ["Set-Cookie"],
+    })(c, next);
+  },
 );
 
 // Global Error Handler

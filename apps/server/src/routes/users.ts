@@ -11,15 +11,27 @@ const usersRoute = new Hono<{
   };
 }>();
 
+const listUsersSchema = z.object({
+    limit: z.string().optional().transform(v => parseInt(v || "50")).pipe(z.number().min(1).max(100)),
+    offset: z.string().optional().transform(v => parseInt(v || "0")).pipe(z.number().min(0)),
+});
+
 const searchQuerySchema = z.object({
   q: z.string().optional().default(""),
 });
 
 /**
  * GET /api/users
- * List all users excluding current user.
+ * List users excluding current user.
  */
 usersRoute.get("/", authMiddleware, async (c) => {
+    const query = c.req.query();
+    const validation = listUsersSchema.safeParse(query);
+    if (!validation.success) {
+        return c.json({ error: "Invalid parameters", details: validation.error.format() }, 400);
+    }
+
+    const { limit, offset } = validation.data;
     const currentUser = c.get("user");
     if (!currentUser) return c.json({ error: "Unauthorized" }, 401);
 
@@ -34,9 +46,10 @@ usersRoute.get("/", authMiddleware, async (c) => {
             .from(user)
             .where(ne(user.id, currentUser.id))
             .orderBy(desc(user.createdAt))
-            .limit(50);
+            .limit(limit)
+            .offset(offset);
         
-        console.info(`[Users] Listed ${results.length} total users`);
+        console.info(`[Users] Listed ${results.length} users (offset=${offset}, limit=${limit})`);
         return c.json(results);
     } catch (error) {
         console.error("[Users] List error:", error);
@@ -79,7 +92,7 @@ usersRoute.get("/search", authMiddleware, async (c) => {
     const formattedQuery = q
       .trim()
       .split(/\s+/)
-      .map((term) => `${term}:*`) // Prefix search
+      .map((term: string) => `${term}:*`) // Prefix search
       .join(" & ");
 
     const results = await db

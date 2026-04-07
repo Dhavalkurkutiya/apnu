@@ -1,4 +1,5 @@
 ---
+
 title: Avoid Shared Module State for Request Data
 impact: HIGH
 impactDescription: prevents concurrency bugs and request data leaks
